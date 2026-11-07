@@ -1,0 +1,17 @@
+Third-party components in this package and their licenses (the project's own code: see the source repository)
+
+- LAS Recomp (the recompiler and runtime this is forked from): MIT, licenses/LICENSE-LASRecomp.txt
+- Dear ImGui (the setup screen and the overlay menu): MIT, licenses/LICENSE-imgui.txt
+- SMAA (built in): MIT-style, licenses/LICENSE-smaa.txt
+- Mbed TLS 3.6 (built in: the game's TLS client): Apache-2.0, licenses/Apache-2.0.txt
+- Zstandard decoder (built in: the costume models): BSD-3-Clause, licenses/LICENSE-zstd.txt
+- bcdec (built in: BC texture decoding where the GPU lacks it): MIT / Unlicense, licenses/LICENSE-bcdec.txt
+- zig (zig/, the compiler the game code is built with): MIT, zig/LICENSE; its clang / lld: Apache-2.0 with
+  LLVM exception (licenses/Apache-2.0.txt)
+- Python 3.12 (python/, python-build-standalone): PSF License and its components' own: python/README-LICENSES.txt
+- capstone (BSD-3-Clause), unicorn (GPL-2.0; source: https://github.com/unicorn-engine/unicorn) and lz4
+  (BSD-3-Clause), the game code generator's Python packages: python/.../site-packages/*.dist-info
+- hactool (hactool/): ISC, hactool/LICENSE.txt; its mbedtls: Apache-2.0, hactool/mbedtls-LICENSE.txt
+- SDL3 (SDL3.dll): zlib license, https://github.com/libsdl-org/SDL/blob/main/LICENSE.txt
+- shaderc, glslang, SPIRV-Tools (libshaderc_shared.dll): Apache-2.0 / BSD-3-Clause, licenses/Apache-2.0.txt
+- libiconv (libiconv-2.dll, used by SDL3): LGPL-2.1, an unmodified MSYS2 build (source: https://www.gnu.org/software/libiconv/)
