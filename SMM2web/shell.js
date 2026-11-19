@@ -93,43 +93,221 @@
   // ------------------------------------------------------------------ game data that came with the build
   // gamedata/manifest.json + game_NN.data (web-build/pack_data.py): the files back to back. copied into the private
   // storage on the first start, and again when the build brings other data. the saves already there are kept
-  async function packedManifest() {
-    try { const r = await fetch('gamedata/manifest.json', { cache: 'no-cache' }); if (r.ok) return await r.json(); } catch (e) {}
+    async function packedManifest() {
+    try {
+      const r = await fetch('gamedata/manifest.json', { cache: 'no-cache' });
+     if (r.ok) {
+       const man = await r.json();
+
+       const CHUNK_SIZE = 104857600;
+       const OLD_PART_SIZES = [1073280022, 1061355598, 961814658];
+
+       // This is the original 3-part layout. Derive the new 100 MiB
+       // GitHub-hosted layout from it.
+       if (man.parts.length === 3) {
+         const total = OLD_PART_SIZES.reduce((sum, size) => sum + size, 0);
+         const count = Math.ceil(total / CHUNK_SIZE);
+         const lastSize = total - CHUNK_SIZE * (count - 1);
+
+         man.parts = Array.from({ length: count }, (_, i) => ({
+           name: 'game_' + String(i).padStart(2, '0') + '.data',
+           size: i === count - 1 ? lastSize : CHUNK_SIZE
+         }));
+       }
+
+       // The existing files array still uses old part numbers and offsets.
+       // Mark the manifest internally and force browsers to re-import it.
+       man._legacyLayout =
+         man.files.some((f) => f[1] >= 0 && f[1] <= 2) &&
+         man.parts.length === 30;
+       man.id = String(man.id || 'packed') + '-resplit-v1';
+
+       return man;
+     }
+    } catch (e) {}
     return null;
   }
+
   async function importPacked(man) {
-    const root = await opfs(); const base = await dirAt(root, [dataDir()], true);
+    const root = await opfs();
+    const base = await dirAt(root, [dataDir()], true);
     try { await navigator.storage.persist(); } catch (e) {}
+
+    const CHUNK_SIZE = 104857600;
+    const OLD_PART_SIZES = [1073280022, 1061355598, 961814658];
+   const oldStarts = [
+     0,
+     OLD_PART_SIZES[0],
+     OLD_PART_SIZES[0] + OLD_PART_SIZES[1]
+   ];
+
+   const newStarts = [0];
+   for (let i = 1; i < man.parts.length; i++) {
+     newStarts[i] = newStarts[i - 1] + man.parts[i - 1].size;
+   }
+
     const total = man.parts.reduce((a, p) => a + p.size, 0);
-    let done = 0, n = 0; const prog = $('prog'); prog.max = total || 1; const t0 = performance.now();
-    const show = () => { const s = (performance.now() - t0) / 1000; prog.value = done; bar(done / (total || 1) * BAR_DATA);
-      $('importmsg').textContent = 'Setting up the game files (first time only) · ' + (done / 1073741824).toFixed(2) + ' / ' + (total / 1073741824).toFixed(2) + ' GB' +
-        (s > 1 ? ' · ' + (done / 1048576 / s).toFixed(0) + ' MB/s' : ''); };
-    for (let pi = 0; pi < man.parts.length; pi++) {
-      const list = man.files.filter((f) => f[1] === pi).sort((a, b) => a[2] - b[2]);
-      const res = await sfetch('gamedata/' + man.parts[pi].name);
-      if (!res.ok || !res.body) throw new Error('gamedata/' + man.parts[pi].name + ': ' + res.status);
-      const rd = res.body.getReader(); let buf = null, bo = 0, pos = 0;
-      const take = async (len, sink) => {   // the next len bytes of the part, to sink (or skipped)
-        while (len > 0) {
-          if (!buf || bo >= buf.length) { const r = await rd.read(); if (r.done) throw new Error(man.parts[pi].name + ' ends early'); buf = r.value; bo = 0; }
-          const k = Math.min(len, buf.length - bo); if (sink) await sink(buf.subarray(bo, bo + k));
-          bo += k; len -= k; pos += k; done += k;
-        }
-      };
-      for (const [rel, , off, size] of list) {
-        if (off > pos) await take(off - pos, null);
-        const parts = rel.split('/'); const d = await dirAt(base, parts.slice(0, -1), true); const name = parts[parts.length - 1];
-        let skip = false; try { const old = await (await d.getFileHandle(name)).getFile(); skip = old.size === size && dataMarker && dataMarker.id === man.id; } catch (e) {}
-        if (skip) await take(size, null);
-        else { const w = await (await d.getFileHandle(name, { create: true })).createWritable(); await take(size, (c) => w.write(c)); await w.close(); }
-        n++; if (n % 25 === 0) show();
-      }
-      try { await rd.cancel(); } catch (e) {}
-    }
+    let done = 0, n = 0;
+    const prog = $('prog');
+    prog.max = total || 1;
+    const t0 = performance.now();
+
+    const show = () => {
+      const s = (performance.now() - t0) / 1000;
+      prog.value = done;
+      bar(done / (total || 1) * BAR_DATA);
+      $('importmsg').textContent =
+        'Setting up the game files (first time only) · ' +
+        (done / 1073741824).toFixed(2) + ' / ' +
+        (total / 1073741824).toFixed(2) + ' GB' +
+        (s > 1
+          ? ' · ' + (done / 1048576 / s).toFixed(0) + ' MB/s'
+          : '');
+    };
+
+   const normalized = man.files.map((f) => {
+     const rel = f[0];
+     const oldPart = f[1];
+     const localOffset = f[2];
+     const size = f[3];
+
+     let absoluteOffset;
+     if (man._legacyLayout) {
+       absoluteOffset = oldStarts[oldPart] + localOffset;
+     } else {
+       absoluteOffset = newStarts[oldPart] + localOffset;
+     }
+
+     return { rel, absoluteOffset, size };
+   }).sort((a, b) =>
+     a.absoluteOffset - b.absoluteOffset ||
+     a.rel.localeCompare(b.rel)
+   );
+
+   let pi = 0;
+   let rd = null;
+   let buf = null;
+   let bo = 0;
+   let partPos = 0;
+   let streamPos = 0;
+
+   async function openPart(index) {
+     pi = index;
+     partPos = 0;
+     buf = null;
+     bo = 0;
+
+     const part = man.parts[pi];
+     if (!part) throw new Error('Missing data part ' + pi);
+
+     const res = await sfetch('gamedata/' + part.name);
+     if (!res.ok || !res.body) {
+       throw new Error(
+         'gamedata/' + part.name + ': ' + res.status
+       );
+     }
+     rd = res.body.getReader();
+   }
+
+   await openPart(0);
+
+   const take = async (len, sink) => {
+     while (len > 0) {
+       while (partPos >= man.parts[pi].size) {
+         try { await rd.cancel(); } catch (e) {}
+         rd = null;
+         if (pi + 1 >= man.parts.length) {
+           throw new Error(
+             man.parts[pi].name + ' ends early'
+           );
+         }
+         await openPart(pi + 1);
+       }
+
+       if (!buf || bo >= buf.length) {
+         const r = await rd.read();
+         if (r.done) {
+           throw new Error(
+             man.parts[pi].name + ' ends early'
+           );
+         }
+         buf = r.value;
+         bo = 0;
+       }
+
+       const k = Math.min(
+         len,
+         buf.length - bo,
+         man.parts[pi].size - partPos
+       );
+
+       if (sink) {
+         await sink(buf.subarray(bo, bo + k));
+       }
+
+       bo += k;
+       len -= k;
+       partPos += k;
+       streamPos += k;
+       done += k;
+     }
+   };
+
+   for (const file of normalized) {
+     if (file.absoluteOffset < streamPos) {
+       throw new Error(
+         'Overlapping manifest entry: ' + file.rel
+       );
+     }
+
+     if (file.absoluteOffset > streamPos) {
+       await take(file.absoluteOffset - streamPos, null);
+     }
+
+     const parts = file.rel.split('/');
+     const d = await dirAt(base, parts.slice(0, -1), true);
+     const name = parts[parts.length - 1];
+
+     let skip = false;
+     try {
+       const old = await (
+         await d.getFileHandle(name)
+       ).getFile();
+       skip =
+         old.size === file.size &&
+         dataMarker &&
+         dataMarker.id === man.id;
+     } catch (e) {}
+
+     if (skip) {
+       await take(file.size, null);
+     } else {
+       const w = await (
+         await d.getFileHandle(name, { create: true })
+       ).createWritable();
+       await take(file.size, (c) => w.write(c));
+       await w.close();
+     }
+
+     n++;
+     if (n % 25 === 0) show();
+   }
+
+   if (rd) {
+     try { await rd.cancel(); } catch (e) {}
+   }
+ 
     show();
-    const mw = await (await base.getFileHandle('.imported', { create: true })).createWritable();
-    await mw.write(JSON.stringify({ files: man.files.length, bytes: total, when: Date.now(), id: man.id })); await mw.close();
+    const mw = await (
+      await base.getFileHandle('.imported', { create: true })
+    ).createWritable();
+    await mw.write(JSON.stringify({
+      files: man.files.length,
+      bytes: total,
+      when: Date.now(),
+      id: man.id
+    }));
+    await mw.close();
     $('importmsg').textContent = 'Game files ready.';
   }
 
